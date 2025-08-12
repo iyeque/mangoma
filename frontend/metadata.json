@@ -1,0 +1,6 @@
+{
+  "name": "Mangoma",
+  "description": "Create and perform generative music with text prompts.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
