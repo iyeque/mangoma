@@ -13,6 +13,11 @@ import { LyriaClient } from './lyria_client.js';
 import { YouTubeRTMPStreamer } from './youtube_rtmp.js';
 import { PresetsAPI } from './presets_api.js';
 import { getLogger, setupLogging } from './utils.js';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const logger = getLogger('server');
 
@@ -20,6 +25,8 @@ const logger = getLogger('server');
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Serve frontend static files at root
+app.use(express.static(join(__dirname, '../frontend')));
 
 // Create HTTP server
 const server = createServer(app);
@@ -382,9 +389,15 @@ server.listen(config.server.port, config.server.host, () => {
 ║  WebSocket: ws://${config.server.host}:${config.server.port}/live/stream          ║
 ║  HTTP API:  http://${config.server.host}:${config.server.port}                      ║
 ║  Health:    http://${config.server.host}:${config.server.port}/health               ║
-║  Model:     ${config.lyria.model.padEnd(35)}║
+║  Model:     ${config.gemini.model.padEnd(35)}║
 ╚══════════════════════════════════════════════════════════╝
   `);
+});
+
+// SPA fallback: serve index.html for any non-API route
+app.get('*', (req, res) => {
+  // Send index.html for all other GET routes (SPA client-side routing)
+  res.sendFile(join(__dirname, '../frontend/index.html'));
 });
 
 export { app, server, wss };

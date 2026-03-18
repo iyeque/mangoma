@@ -84,24 +84,23 @@
 
   <script>
     const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${location.host}/live/stream`;
-    let ws: WebSocket | null = null;
-    let mediaRecorder: MediaRecorder | null = null;
-    let audioChunks: Blob[] = [];
+    const wsUrl = wsProtocol + '//' + location.host + '/live/stream';
+    let ws = null;
+    let mediaRecorder = null;
 
-    const log = (msg: string, type: 'sent' | 'received' | 'error' | 'info' = 'info') => {
+    const log = (msg, type = 'info') => {
       const logDiv = document.getElementById('log');
       const entry = document.createElement('div');
-      entry.className = `log-entry ${type}`;
-      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      entry.className = 'log-entry ' + type;
+      entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
       logDiv.appendChild(entry);
       logDiv.scrollTop = logDiv.scrollHeight;
     };
 
-    const updateStatus = (status: string, connected: boolean) => {
+    const updateStatus = (status, connected) => {
       const statusDiv = document.getElementById('status');
       statusDiv.textContent = status;
-      statusDiv.className = `status ${connected ? 'connected' : 'disconnected'}`;
+      statusDiv.className = 'status ' + (connected ? 'connected' : 'disconnected');
     };
 
     document.getElementById('connectBtn').addEventListener('click', async () => {
@@ -120,16 +119,15 @@
           document.getElementById('startBtn').disabled = false;
           document.getElementById('loadPresetBtn').disabled = false;
           log('Connected to server', 'received');
+          loadPresets(); // Auto-fetch presets
         };
 
-        ws.onmessage = async (event: MessageEvent) => {
+        ws.onmessage = async (event) => {
           if (event.data instanceof Blob) {
-            // Audio data from server (processed by Lyria)
-            // Could play it back for monitoring
-            log(`Received audio chunk: ${event.data.size} bytes`, 'received');
+            log('Received audio chunk: ' + event.data.size + ' bytes', 'received');
           } else {
             const msg = JSON.parse(event.data);
-            log(`Message: ${JSON.stringify(msg)}`, 'received');
+            log('Message: ' + JSON.stringify(msg), 'received');
           }
         };
 
@@ -154,7 +152,6 @@
     document.getElementById('startBtn').addEventListener('click', async () => {
       if (!ws) return;
 
-      // Request microphone access
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
@@ -165,23 +162,19 @@
           } 
         });
 
-        // Use WebM with Opus codec for best compatibility
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-        audioChunks = [];
 
         mediaRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
-            audioChunks.push(event.data);
-            // Send chunk to server
             event.data.arrayBuffer().then(buffer => {
-              if (ws?.readyState === WebSocket.OPEN) {
+              if (ws.readyState === WebSocket.OPEN) {
                 ws.send(buffer);
               }
             });
           }
         };
 
-        mediaRecorder.start(100); // 100ms chunks for low latency
+        mediaRecorder.start(100);
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
         log('Recording started', 'info');
@@ -205,21 +198,18 @@
       }
     }
 
-    // Load presets on connect
-    let presetsFetched = false;
     const loadPresets = async () => {
       try {
         const res = await fetch('/api/presets');
         const data = await res.json();
         const select = document.getElementById('presetSelect');
         select.innerHTML = '<option value="">-- Select Preset --</option>';
-        data.presets.forEach((preset: any) => {
+        data.presets.forEach((preset) => {
           const opt = document.createElement('option');
           opt.value = preset.id;
           opt.textContent = preset.name;
           select.appendChild(opt);
         });
-        presetsFetched = true;
       } catch (error) {
         log('Failed to fetch presets: ' + error, 'error');
       }
@@ -230,12 +220,11 @@
       if (!presetId || !ws) return;
 
       ws.send(JSON.stringify({ type: 'preset', presetId }));
-      log(`Loaded preset: ${presetId}`, 'info');
+      log('Loaded preset: ' + presetId, 'info');
     });
 
     // Auto-load presets when connected
-    const originalOnOpen = ws?.onopen;
-    ws = null; // reset reference
+    ws = null;
   </script>
 </body>
 </html>
