@@ -2,98 +2,143 @@
 
 ## System Overview
 
-Mangoma is an AI-powered music generation platform with **two distinct pipelines**:
+Mangoma is an AI-powered music generation platform with **two complementary pipelines**:
 
-1. **Pre-Rendered Video Pipeline** (`src/`, `backend/`, `frontend/`) - Generates music videos offline
-2. **Live Streaming Module** (`live/`) - Real-time YouTube RTMP streaming
+### 1. Pre-Rendered Video Pipeline (`backend/src/` and `frontend/studio/`)
 
----
-
-## Pipeline 1: Pre-Rendered Video (Active)
-
-**Purpose:** Generate complete music videos (audio + visuals) for YouTube upload.
+**Purpose:** Generate complete music videos (audio + visuals) for scheduled YouTube uploads.
 
 **Stack:**
-- **Backend:** Python + FastAPI (`backend/src/`)
-- **Frontend:** TypeScript + Lit (`frontend/`)
-- **AI:** Google Lyria (`lyria-realtime-exp`) + Stable Diffusion
-- **Output:** MP4 video files ready for upload
+- **Backend:** Node.js + Express + FastAPI (Python) - *Note: Python backend being integrated*
+- **Frontend:** TypeScript + Lit (`frontend/studio/`)
+- **AI:** Google Lyria (music) + Stable Diffusion (visuals)
+- **Output:** MP4 video files for upload
 
 **Flow:**
 ```
-User Request → Lyria API (audio) → Stable Diffusion (frames) → FFmpeg (merge) → MP4 output
+User → Studio UI (prompts/weights) → Preset export → Offline rendering → MP4 → YouTube upload
 ```
 
-**Use Case:** Scheduled content, pre-produced playlists, high-quality rendered videos.
+### 2. Live Streaming Module (`backend/src/live/` and `frontend/live/`)
 
----
-
-## Pipeline 2: Live Streaming (In Development)
-
-**Purpose:** Real-time audio streaming to YouTube Live.
+**Purpose:** 24/7 autonomous music generation streamed live to YouTube.
 
 **Stack:**
-- **Server:** Node.js + TypeScript + Express + WebSocket (`live/src/`)
-- **Frontend:** Browser MediaRecorder (`live/frontend/`)
-- **AI:** Google Lyria (`lyria-realtime-exp`)
-- **Output:** RTMP stream to YouTube
+- **Backend:** Node.js + Express + WebSocket (`backend/src/live/`)
+- **Frontend:** Simple HTML/JS dashboard (`frontend/live/`)
+- **AI:** Google Lyria continuous generation
+- **Output:** RTMP stream to YouTube (audio + black video placeholder)
 
 **Flow:**
 ```
-Browser Mic → WebSocket → Lyria API (enhanced audio) → FFmpeg (AAC/FLV) → YouTube RTMP
+Text prompt → Lyria API (autonomous) → FFmpeg (AAC/FLV) → YouTube RTMP
+       ↑
+Chat commands (!bpm, !mood, !genre) adjust parameters in real-time
 ```
-
-**Use Case:** 24/7 lo-fi streams, interactive live sessions, real-time audience requests.
 
 ---
 
-## Directory Structure
+## Unified Directory Structure
 
 ```
 mangoma/
-├── backend/              # Pre-rendered pipeline (Python/FastAPI)
-│   └── src/
-├── frontend/             # Pre-rendered pipeline UI (TypeScript/Lit)
-├── live/                 # Live streaming module (Node.js/TypeScript)
+├── backend/
 │   ├── src/
-│   ├── frontend/
-│   └── presets/
-├── config/               # Shared configuration
-├── templates/            # Video templates
-├── output/               # Generated content (gitignored)
-├── memory/               # Agent memory logs
-├── README.md             # Quick start
-├── ARCHITECTURE.md       # This file
-├── CONTRIBUTING.md       # Contribution guidelines
-└── IMPLEMENTATION_PLAN.md # Roadmap
+│   │   ├── proxy/           # Existing WebSocket proxy for pre-rendered pipeline
+│   │   └── live/            # Live streaming backend
+│   │       ├── server.ts
+│   │       ├── lyria_client.ts
+│   │       ├── youtube_rtmp.ts
+│   │       ├── chat_poller.ts
+│   │       ├── presets_api.ts
+│   │       ├── config.ts
+│   │       ├── utils.ts
+│   │       └── presets/     # Preset JSON files
+│   ├── package.json
+│   └── ...
+├── frontend/
+│   ├── studio/              # Prompt-based generative UI (pre-rendered)
+│   │   ├── index.html
+│   │   ├── index.tsx
+│   │   ├── utils.ts
+│   │   ├── present.md
+│   │   ├── future.md
+│   │   ├── package.json
+│   │   └── ...
+│   └── live/                # Live stream control dashboard
+│       └── index.html
+├── docs/
+│   ├── LIVE_STREAMING.md    # Comprehensive live streaming guide
+│   └── API.md               # Full API reference
+├── memory/                  # Agent memory logs (daily)
+├── .env.example             # Environment template (backend)
+├── README.md                # Project overview and quick start
+├── ARCHITECTURE.md          # This file
+├── CONTRIBUTING.md          # Contribution guidelines
+└── AGENTS.md                # Agent operation manual
+
+DEPRECATED (removed):
+- mangoma/live/              # Has been redistributed into backend/ and frontend/
 ```
 
 ---
 
 ## Key Differences
 
-| Aspect | Pre-Rendered | Live Streaming |
-|--------|-------------|----------------|
+| Aspect | Pre-Rendered (Studio) | Live Streaming |
+|--------|----------------------|----------------|
 | **Latency** | Minutes-hours (batch) | Real-time (<1s) |
-| **Output** | MP4 files | RTMP stream |
-| **Interaction** | None (pre-generated) | Chat commands, live adjustments |
-| **Complexity** | High (video generation) | Medium (audio only + black video) |
-| **Cost** | Higher (compute-intensive) | Lower (streaming only) |
+| **Output** | MP4 files (video+audio) | RTMP stream (audio + black video) |
+| **Interaction** | Prompt editing, weights | Chat commands, parameter sliders |
+| **AI Usage** | Single generations | Continuous autonomous loop |
+| **FFmpeg** | Video rendering | Audio-to-RTMP pipeline |
+| **Use Case** | Scheduled uploads | 24/7 automated streams |
+| **Frontend** | TypeScript/Lit SPA | Simple control HTML |
+
+---
+
+## Data Flow
+
+### Live Streaming Pipeline
+
+1. **Start Request** → User selects preset or enters custom prompt on dashboard
+2. **Server initiates** → `/api/stream/start` loads preset, creates LyriaClient, starts YouTubeRTMPStreamer
+3. **Lyria Connection** → `LyriaClient.connect()` establishes WebSocket to Google GenAI
+4. **Autonomous Generation** → `startGeneration(prompt, params)` begins continuous audio streaming
+5. **Audio Pipeline** → Lyria audio chunks → YouTubeRTMPStreamer.writeAudio() → FFmpeg stdin → YouTube RTMP
+6. **Control Loop** → WebSocket (dashboard) / REST API → parameter updates → `updateParameters()` → Lyria
+7. **Chat Interaction** → ChatPoller polls YouLive → translates commands → parameter updates
+
+### Pre-Rendered Pipeline
+
+1. **Preset Authoring** → User creates prompts and weights in Studio UI
+2. **Preset Export** → JSON saved to backend
+3. **Scheduled Job** → Orchestrator triggers generator script
+4. **Lyria Generations** → Script calls Lyria multiple times to create full track
+5. **Visuals** → Stable Diffusion generates corresponding frames
+6. **Composition** → FFmpeg merges audio + visuals into MP4
+7. **Upload** → YouTube API publishes video
 
 ---
 
 ## Integration Points
 
-- **Shared:** Google Lyria API, preset configuration format
-- **Separate:** Rendering engines, output formats, deployment
+- **Shared:** Google Lyria API, preset JSON schema, configuration patterns
+- **Backend:** Separate Express servers (can be monolith or microservices)
+- **Frontend:** Completely separate dashboards, can be served from same domain
 
 ---
 
-## Agent Integration
+## Agent Operation
 
-Mangoma is an **autonomous OpenClaw agent** capable of:
-- Self-maintenance (git, tests, memory sync)
-- Skill extension (edit AGENTS.md, TOOLS.md)
-- Repo organization (this architecture doc was agent-generated)
+Mangoma runs as an autonomous OpenClaw agent responsible for:
 
-See `README.md` for agent spawning instructions.
+- Self-maintenance (git operations, commit/push)
+- Code refactoring (e.g., continuous generation migration)
+- Memory persistence (`memory/YYYY-MM-DD.md`, `MEMORY.md`)
+- Documentation upkeep (`ARCHITECTURE.md`, `docs/`)
+- Repository organization (directory restructuring)
+
+The agent follows the **Mangoma** identity defined in `AGENTS.md`.
+
+See `README.md` for setup and deployment instructions.

@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mangoma Live - Stream Control</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 1000px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background: #0f0f23;
+      color: #e0e0e0;
+    }
+    h1 { color: #7f5af0; }
+    .card {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 1rem 0;
+    }
+    .status {
+      padding: 1rem;
+      background: #1a1a2e;
+      border-radius: 8px;
+      margin: 1rem 0;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #e74c3c;
+    }
+    .status.connected .status-indicator { background: #2ecc71; }
+    .status.streaming .status-indicator { background: #f39c12; }
+    
+    button {
+      background: #7f5af0;
+      color: white;
+      border: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 0.25rem;
+      font-size: 1rem;
+    }
+    button:disabled { background: #555; cursor: not-allowed; }
+    button.danger { background: #e74c3c; }
+    button.success { background: #2ecc71; }
+    select, input[type="text"], input[type="number"] {
+      padding: 0.5rem;
+      background: #1a1a2e;
+      border: 1px solid #333;
+      color: #e0e0e0;
+      border-radius: 4px;
+      margin: 0.25rem;
+    }
+    .control-group {
+      margin: 1rem 0;
+    }
+    .control-group label {
+      display: block;
+      margin-bottom: 0.5rem;
+      color: #a0a0a0;
+    }
+    .slider-container {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    input[type="range"] {
+      flex: 1;
+      height: 6px;
+      background: #333;
+      border-radius: 3px;
+      outline: none;
+    }
+    .slider-value {
+      min-width: 60px;
+      text-align: right;
+    }
+    .log {
+      background: #000;
+      padding: 1rem;
+      border-radius: 4px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 0.875rem;
+    }
+    .log-entry { margin: 0.25rem 0; }
+    .log-entry.sent { color: #2ecc71; }
+    .log-entry.received { color: #3498db; }
+    .log-entry.error { color: #e74c3c; }
+    .log-entry.info { color: #f39c12; }
+    .parameter-display {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    .parameter-item {
+      background: #252542;
+      padding: 0.75rem;
+      border-radius: 4px;
+    }
+    .parameter-item .label {
+      font-size: 0.75rem;
+      color: #888;
+      margin-bottom: 0.25rem;
+    }
+    .parameter-item .value {
+      font-size: 1.25rem;
+      color: #7f5af0;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎵 Mangoma Live Control</h1>
+  
+  <div class="status disconnected" id="status">
+    <div class="status-indicator"></div>
+    <div>
+      <div><strong id="statusText">Disconnected</strong></div>
+      <div id="statusDetails">Not connected to server</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Connection</h3>
+    <button id="wsConnectBtn">Connect WebSocket</button>
+    <button id="startStreamBtn" disabled>Start Stream</button>
+    <button id="stopStreamBtn" class="danger" disabled>Stop Stream</button>
+  </div>
+
+  <div class="card">
+    <h3>Preset</h3>
+    <div class="control-group">
+      <label>Load Preset:</label>
+      <select id="presetSelect">
+        <option value="">-- Select Preset --</option>
+      </select>
+      <button id="loadPresetBtn" disabled>Load Preset</button>
+    </div>
+    <div class="control-group">
+      <label>Or start with custom prompt:</label>
+      <input type="text" id="customPrompt" placeholder="e.g., Lo-fi jazz with rain sounds" style="width: 100%;">
+      <button id="startCustomBtn" disabled>Start Custom</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Live Parameters</h3>
+    <div id="parameterDisplay" class="parameter-display">
+      <div class="parameter-item">
+        <div class="label">BPM</div>
+        <div class="value" id="paramBPM">--</div>
+      </div>
+      <div class="parameter-item">
+        <div class="label">Mood</div>
+        <div class="value" id="paramMood">--</div>
+      </div>
+      <div class="parameter-item">
+        <div class="label">Genre</div>
+        <div class="value" id="paramGenre">--</div>
+      </div>
+      <div class="parameter-item">
+        <div class="label">Intensity</div>
+        <div class="value" id="paramIntensity">--</div>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>BPM: <span id="bpmValue">70</span></label>
+      <div class="slider-container">
+        <input type="range" id="bpmSlider" min="40" max="200" value="70">
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Intensity: <span id="intensityValue">0.7</span></label>
+      <div class="slider-container">
+        <input type="range" id="intensitySlider" min="0" max="1" step="0.05" value="0.7">
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Mood:</label>
+      <select id="moodSelect">
+        <option value="chill">Chill</option>
+        <option value="energetic">Energetic</option>
+        <option value="focus">Focus</option>
+        <option value="nostalgic">Nostalgic</option>
+        <option value="happy">Happy</option>
+        <option value="melancholic">Melancholic</option>
+        <option value="dark">Dark</option>
+        <option value="uplifting">Uplifting</option>
+      </select>
+      <button id="updateMoodBtn">Update</button>
+    </div>
+
+    <div class="control-group">
+      <label>Genre:</label>
+      <select id="genreSelect">
+        <option value="lo-fi">Lo-Fi</option>
+        <option value="jazz">Jazz</option>
+        <option value="ambient">Ambient</option>
+        <option value="synthwave">Synthwave</option>
+        <option value="electronic">Electronic</option>
+        <option value="classical">Classical</option>
+        <option value="hip-hop">Hip-Hop</option>
+        <option value="rock">Rock</option>
+      </select>
+      <button id="updateGenreBtn">Update</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>System Log</h3>
+    <div class="log" id="log">
+      <div class="log-entry info">Ready to connect...</div>
+    </div>
+    <button onclick="document.getElementById('log').innerHTML=''">Clear Log</button>
+  </div>
+
+  <script>
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = wsProtocol + '//' + location.host + '/live/stream';
+    
+    let ws = null;
+    let wsConnected = false;
+    let streaming = false;
+
+    // DOM references
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('status');
+    const statusText = document.getElementById('statusText');
+    const statusDetails = document.getElementById('statusDetails');
+    
+    const wsConnectBtn = document.getElementById('wsConnectBtn');
+    const startStreamBtn = document.getElementById('startStreamBtn');
+    const stopStreamBtn = document.getElementById('stopStreamBtn');
+    const presetSelect = document.getElementById('presetSelect');
+    const loadPresetBtn = document.getElementById('loadPresetBtn');
+    const customPrompt = document.getElementById('customPrompt');
+    const startCustomBtn = document.getElementById('startCustomBtn');
+    
+    // Parameter elements
+    const paramBPM = document.getElementById('paramBPM');
+    const paramMood = document.getElementById('paramMood');
+    const paramGenre = document.getElementById('paramGenre');
+    const paramIntensity = document.getElementById('paramIntensity');
+    const bpmSlider = document.getElementById('bpmSlider');
+    const bpmValue = document.getElementById('bpmValue');
+    const intensitySlider = document.getElementById('intensitySlider');
+    const intensityValue = document.getElementById('intensityValue');
+    const moodSelect = document.getElementById('moodSelect');
+    const updateMoodBtn = document.getElementById('updateMoodBtn');
+    const genreSelect = document.getElementById('genreSelect');
+    const updateGenreBtn = document.getElementById('updateGenreBtn');
+
+    // Logging
+    function log(msg, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Update status display
+    function updateStatus(connected, streaming) {
+      statusEl.className = 'status';
+      if (connected) statusEl.classList.add('connected');
+      if (streaming) statusEl.classList.add('streaming');
+      
+      statusText.textContent = connected
+        ? (streaming ? 'Streaming Active' : 'Connected (idle)')
+        : 'Disconnected';
+        
+      statusDetails.textContent = connected
+        ? (streaming 
+            ? 'Generating continuous music → YouTube'
+            : 'WebSocket connected, ready to start')
+        : 'Not connected to server';
+    }
+
+    // WebSocket connect
+    wsConnectBtn.addEventListener('click', () => {
+      if (ws) {
+        ws.close();
+        return;
+      }
+
+      log(`Connecting to ${wsUrl}...`, 'info');
+      ws = new WebSocket(wsUrl);
+      
+      ws.onopen = () => {
+        wsConnected = true;
+        updateStatus(true, streaming);
+        wsConnectBtn.textContent = 'Disconnect';
+        startStreamBtn.disabled = false;
+        loadPresetBtn.disabled = false;
+        startCustomBtn.disabled = false;
+        log('WebSocket connected', 'received');
+        loadPresets();
+      };
+
+      ws.onmessage = (event) => {
+        if (event.data instanceof Blob) {
+          // We shouldn't receive audio in this dashboard (unless monitoring)
+          log(`Received binary: ${event.data.size} bytes`, 'received');
+        } else {
+          try {
+            const msg = JSON.parse(event.data);
+            log(`Message: ${JSON.stringify(msg)}`, 'received');
+            
+            // Update status based on server messages
+            if (msg.type === 'connected') {
+              updateStatusDisplay(msg);
+            } else if (msg.type === 'parameters_updated') {
+              updateParameters(msg.params);
+            } else if (msg.type === 'preset_loaded') {
+              log(`Preset ${msg.preset} loaded`, 'info');
+            }
+          } catch (e) {
+            log('Failed to parse message', 'error');
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        wsConnected = false;
+        ws = null;
+        updateStatus(false, false);
+        wsConnectBtn.textContent = 'Connect WebSocket';
+        startStreamBtn.disabled = true;
+        stopStreamBtn.disabled = true;
+        loadPresetBtn.disabled = true;
+        startCustomBtn.disabled = true;
+        streaming = false;
+        log('WebSocket closed', 'info');
+      };
+
+      ws.onerror = (error) => {
+        log('WebSocket error', 'error');
+      };
+    });
+
+    function updateStatusDisplay(msg) {
+      if (msg.generating) {
+        streaming = true;
+        startStreamBtn.disabled = true;
+        stopStreamBtn.disabled = false;
+        updateParameters(msg.params || {});
+      }
+      updateStatus(wsConnected, streaming);
+    }
+
+    // Load presets
+    async function loadPresets() {
+      try {
+        const res = await fetch('/api/presets');
+        const data = await res.json();
+        presetSelect.innerHTML = '<option value="">-- Select Preset --</option>';
+        data.presets.forEach(preset => {
+          const opt = document.createElement('option');
+          opt.value = preset.id;
+          opt.textContent = preset.name;
+          presetSelect.appendChild(opt);
+        });
+        log(`Loaded ${data.presets.length} presets`, 'info');
+      } catch (error) {
+        log(`Failed to load presets: ${error.message}`, 'error');
+      }
+    }
+
+    // Start stream with preset
+    loadPresetBtn.addEventListener('click', async () => {
+      const presetId = presetSelect.value;
+      if (!presetId || !ws) return;
+
+      try {
+        const res = await fetch('/api/stream/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ presetId })
+        });
+        
+        if (res.ok) {
+          streaming = true;
+          updateStatus(true, streaming);
+          startStreamBtn.disabled = true;
+          stopStreamBtn.disabled = false;
+          log(`Stream started with preset: ${presetId}`, 'info');
+        } else {
+          const err = await res.json();
+          log(`Start failed: ${err.error}`, 'error');
+        }
+      } catch (error) {
+        log(`Failed to start: ${error.message}`, 'error');
+      }
+    });
+
+    // Start custom stream
+    startCustomBtn.addEventListener('click', async () => {
+      const prompt = customPrompt.value.trim();
+      if (!prompt || !ws) return;
+
+      try {
+        const res = await fetch('/api/stream/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customPrompt: prompt })
+        });
+        
+        if (res.ok) {
+          streaming = true;
+          updateStatus(true, streaming);
+          startStreamBtn.disabled = true;
+          stopStreamBtn.disabled = false;
+          log(`Custom stream started: "${prompt}"`, 'info');
+        } else {
+          const err = await res.json();
+          log(`Start failed: ${err.error}`, 'error');
+        }
+      } catch (error) {
+        log(`Failed to start: ${error.message}`, 'error');
+      }
+    });
+
+    // Stop stream
+    stopStreamBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/stream/stop', { method: 'POST' });
+        if (res.ok) {
+          streaming = false;
+          updateStatus(true, streaming);
+          startStreamBtn.disabled = false;
+          stopStreamBtn.disabled = true;
+          log('Stream stopped', 'info');
+        }
+      } catch (error) {
+        log(`Stop failed: ${error.message}`, 'error');
+      }
+    });
+
+    // Parameter updates
+    bpmSlider.addEventListener('input', (e) => {
+      bpmValue.textContent = e.target.value;
+    });
+    
+    bpmSlider.addEventListener('change', async (e) => {
+      const bpm = parseInt(e.target.value, 10);
+      await updateParams({ bpm });
+    });
+
+    intensitySlider.addEventListener('input', (e) => {
+      intensityValue.textContent = e.target.value;
+    });
+    
+    intensitySlider.addEventListener('change', async (e) => {
+      const intensity = parseFloat(e.target.value);
+      await updateParams({ intensity });
+    });
+
+    updateMoodBtn.addEventListener('click', async () => {
+      const mood = moodSelect.value;
+      await updateParams({ mood: mood });
+    });
+
+    updateGenreBtn.addEventListener('click', async () => {
+      const genre = genreSelect.value;
+      await updateParams({ genre: genre });
+    });
+
+    async function updateParams(params) {
+      try {
+        const res = await fetch('/api/stream/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params)
+        });
+        
+        if (res.ok) {
+          log(`Updated params: ${JSON.stringify(params)}`, 'sent');
+          // Get current status to update display
+          const statusRes = await fetch('/api/stream/status');
+          const status = await statusRes.json();
+          updateParameters(status.params);
+        } else {
+          log(`Update failed: ${(await res.json()).error}`, 'error');
+        }
+      } catch (error) {
+        log(`Update error: ${error.message}`, 'error');
+      }
+    }
+
+    function updateParameters(params) {
+      if (params.bpm) {
+        paramBPM.textContent = params.bpm;
+        bpmSlider.value = params.bpm;
+        bpmValue.textContent = params.bpm;
+      }
+      if (params.mood) {
+        paramMood.textContent = params.mood;
+        moodSelect.value = params.mood;
+      }
+      if (params.genre) {
+        paramGenre.textContent = params.genre;
+        genreSelect.value = params.genre;
+      }
+      if (params.intensity !== undefined) {
+        paramIntensity.textContent = params.intensity.toFixed(2);
+        intensitySlider.value = params.intensity;
+        intensityValue.textContent = params.intensity.toFixed(2);
+      }
+    }
+
+    // Poll stream status periodically
+    setInterval(async () => {
+      if (!wsConnected) return;
+      try {
+        const res = await fetch('/api/stream/status');
+        const status = await res.json();
+        if (status.generating && !streaming) {
+          streaming = true;
+          updateStatus(true, streaming);
+          startStreamBtn.disabled = true;
+          stopStreamBtn.disabled = false;
+          updateParameters(status.params || {});
+        } else if (!status.generating && streaming) {
+          streaming = false;
+          updateStatus(true, streaming);
+          startStreamBtn.disabled = false;
+          stopStreamBtn.disabled = true;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }, 3000);
+  </script>
+</body>
+</html>
