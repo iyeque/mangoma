@@ -48,6 +48,8 @@ let youtubeStreamer: YouTubeRTMPStreamer | null = null;
 let chatPoller: ChatPoller | null = null;
 let currentPreset: any = null;
 let activeConnections = new Set<WebSocket>();
+let chatHistory: { author: string; text: string; timestamp: number }[] = [];
+const maxChatHistory = 100;
 
 /**
  * Health check endpoint
@@ -175,7 +177,11 @@ app.post('/api/stream/start', async (req, res) => {
       streamKey: config.youtube.streamKey,
       audioBitrate: config.audio.bitrate,
       sampleRate: config.audio.sampleRate,
-      channels: config.audio.channels
+      channels: config.audio.channels,
+      // Pass chat callback to collect messages for history/WebSocket
+      onChatMessage: (author: string, text: string) => {
+        addChatMessage(author, text);
+      }
     });
 
     currentPreset = preset;
@@ -191,14 +197,26 @@ app.post('/api/stream/start', async (req, res) => {
 
     // Initialize chat poller if enabled
     if (preset?.interaction?.realtimeAdjustments?.enabled) {
-      chatPoller = new ChatPoller(lyriaClient, {
-        enabled: preset.youtube?.chatEnabled ?? true,
-        pollIntervalMs: 5000,
-        cooldownSeconds: preset.interaction.realtimeAdjustments.cooldownSeconds || 300,
-        allowedCommands: ['!bpm', '!mood', '!genre', '!intensity', '!help']
+      chatPoller = new ChatPoller(
+        lyriaClient,
+        youtubeStreamer,
+        {
+          enabled: preset.youtube?.chatEnabled ?? true,
+          pollIntervalMs: 5000,
+          cooldownSeconds: preset.interaction.realtimeAdjustments.cooldownSeconds || 300,
+          allowedCommands: ['!bpm', '!mood', '!genre', '!intensity', '!visualize', '!help'],
+          useSimulation: true // MVP: use simulation mode; set false and add API key for production
+        }
+      );
+      
+      // Set up chat message callback to store in history
+      chatPoller.setCommandHandler(async (command, args, author) => {
+        // This runs after command processing - could send notifications, etc.
+        logger.debug(`Command processed via handler: ${command} by ${author}`);
       });
+      
       chatPoller.start();
-      logger.info('Chat poller started');
+      logger.info('Chat poller started (simulation mode)');
     }
 
     logger.info(`Stream started with preset: ${presetId || 'custom'}`);
@@ -305,6 +323,51 @@ app.get('/api/stream/status', (req, res) => {
 });
 
 /**
+ * Get recent chat history (for dashboard)
+ */
+app.get('/api/chat', (req, res) => {
+  const limit = parseInt(req.query.limit as string) || 50;
+  const recent = chatHistory.slice(-limit).reverse(); // newest first
+  res.json({ messages: recent, total: chatHistory.length });
+});
+
+/**
+ * Clear chat history
+ */
+app.delete('/api/chat', (req, res) => {
+  chatHistory = [];
+  res.json({ message: 'Chat history cleared' });
+});
+
+/**
+ * Broadcast chat message to all connected WebSocket clients
+ */
+function broadcastChatMessage(message: { author: string; text: string; timestamp: number }) {
+  const payload = JSON.stringify({
+    type: 'chat_message',
+    ...message
+  });
+  
+  for (const ws of activeConnections) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    }
+  }
+}
+
+/**
+ * Add chat message to history and broadcast
+ */
+function addChatMessage(author: string, text: string) {
+  const message = { author, text, timestamp: Date.now() };
+  chatHistory.push(message);
+  if (chatHistory.length > maxChatHistory) {
+    chatHistory = chatHistory.slice(-maxChatHistory);
+  }
+  broadcastChatMessage(message);
+}
+
+/**
  * WebSocket handler for control commands ONLY
  * No microphone audio - this is for chat commands and parameter updates
  */
@@ -314,7 +377,7 @@ wss.on('connection', (ws: WebSocket, req: any) => {
   
   activeConnections.add(ws);
 
-  // Send welcome message with current status
+  // Send welcome message with current status and recent chat
   ws.send(JSON.stringify({
     type: 'connected',
     clientId,
@@ -322,6 +385,7 @@ wss.on('connection', (ws: WebSocket, req: any) => {
     preset: currentPreset?.id ?? null,
     generating: lyriaClient?.isGenerating() ?? false,
     params: lyriaClient?.getCurrentParams() ?? null,
+    chatHistory: chatHistory.slice(-10), // last 10 messages
     message: 'Connected to Mangoma Live control. Send commands to adjust music generation.'
   }));
 
@@ -400,34 +464,52 @@ async function handleControlMessage(ws: WebSocket, message: any) {
 
     case 'chat_command':
       // Simulate a chat command (for testing or API-triggered commands)
-      if (lyriaClient && data.command && data.args) {
-        const { command, args, author } = data;
-        logger.info(`Chat command via WebSocket: ${command} by ${author || 'system'}`);
+      if (data.command && data.args) {
+        const { command, args, author = 'System' } = data;
+        const fullCmd = `${command} ${args.join(' ')}`.trim();
         
-        // Parse and execute command
-        const params: any = {};
-        switch (command) {
-          case '!bpm':
-            params.bpm = parseInt(args[0], 10);
-            break;
-          case '!mood':
-            params.mood = args[0];
-            break;
-          case '!genre':
-            params.genre = args[0];
-            break;
-          case '!intensity':
-            params.intensity = parseFloat(args[0]);
-            break;
+        logger.info(`Chat command via WebSocket: ${fullCmd} by ${author}`);
+        
+        // Add command to chat overlay (so viewers see it)
+        if (youtubeStreamer) {
+          youtubeStreamer.addChatMessage(author, fullCmd);
         }
         
-        if (Object.keys(params).length > 0) {
-          await lyriaClient.updateParameters(params);
-          ws.send(JSON.stringify({ 
-            type: 'command_executed',
-            command,
-            params
-          }));
+        // Process the command if Lyria is active
+        if (lyriaClient) {
+          const params: any = {};
+          switch (command) {
+            case '!bpm':
+              params.bpm = parseInt(args[0], 10);
+              break;
+            case '!mood':
+              params.mood = args[0];
+              break;
+            case '!genre':
+              params.genre = args[0];
+              break;
+            case '!intensity':
+              params.intensity = parseFloat(args[0]);
+              break;
+            case '!visualize':
+              params.showChat = args[0] === 'on' || args[0] === 'true';
+              break;
+          }
+          
+          if (Object.keys(params).length > 0) {
+            await lyriaClient.updateParameters(params);
+            
+            // Also update visualizer if needed
+            if (youtubeStreamer) {
+              youtubeStreamer.updateVisualizerParams(params);
+            }
+            
+            ws.send(JSON.stringify({ 
+              type: 'command_executed',
+              command,
+              params
+            }));
+          }
         }
       }
       break;

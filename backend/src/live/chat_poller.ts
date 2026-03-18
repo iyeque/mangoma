@@ -1,12 +1,16 @@
 /**
  * YouLive Chat Poller
  * 
- * Polls YouLive chat for viewer commands and triggers Lyria parameter updates.
- * Supports commands: !bpm, !mood, !genre, !intensity, !help
+ * Polls YouLive/YouTube Live Chat for viewer commands and triggers updates.
+ * Supports commands: !bpm, !mood, !genre, !intensity, !visualize, !help
+ * 
+ * MVP Mode: Uses simulation to test functionality without YouTube API credentials.
+ * Production: Requires YouTube Data API v3 with liveChatId from broadcast.
  */
 
 import { getLogger } from './utils.js';
 import type { LyriaClient } from './lyria_client.js';
+import type { YouTubeRTMPStreamer } from './youtube_rtmp.js';
 
 const logger = getLogger('chat_poller');
 
@@ -22,6 +26,9 @@ export interface ChatPollerOptions {
   pollIntervalMs: number;
   cooldownSeconds: number;
   allowedCommands: string[];
+  useSimulation?: boolean; // MVP: true = simulate chat, false = use real API
+  youtubeBroadcastId?: string; // For production YouTube API integration
+  youtubeApiKey?: string; // YouTube Data API key
 }
 
 export type ChatCommandHandler = (command: string, args: string[], author: string) => Promise<void>;
@@ -32,19 +39,35 @@ export class ChatPoller {
   private cooldownSeconds: number;
   private allowedCommands: string[];
   private lyriaClient: LyriaClient;
+  private youtubeStreamer: YouTubeRTMPStreamer | null = null;
   private polling: boolean = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private lastCommandTime: Map<string, number> = new Map();
   private lastMessageId: string | null = null;
   private onCommand?: ChatCommandHandler;
+  private useSimulation: boolean;
+  private youtubeBroadcastId?: string;
+  private youtubeApiKey?: string;
+  
+  // Simulation state
+  private simulationCounter: number = 0;
 
-  constructor(lyriaClient: LyriaClient, options: ChatPollerOptions, onCommand?: ChatCommandHandler) {
+  constructor(
+    lyriaClient: LyriaClient,
+    youtubeStreamer: YouTubeRTMPStreamer | null,
+    options: ChatPollerOptions,
+    onCommand?: ChatCommandHandler
+  ) {
     this.lyriaClient = lyriaClient;
+    this.youtubeStreamer = youtubeStreamer;
     this.enabled = options.enabled;
     this.pollIntervalMs = options.pollIntervalMs || 5000;
     this.cooldownSeconds = options.cooldownSeconds || 300;
-    this.allowedCommands = options.allowedCommands || ['!bpm', '!mood', '!genre', '!intensity', '!help'];
+    this.allowedCommands = options.allowedCommands || ['!bpm', '!mood', '!genre', '!intensity', '!visualize', '!help'];
     this.onCommand = onCommand;
+    this.useSimulation = options.useSimulation ?? true; // Default to simulation for MVP
+    this.youtubeBroadcastId = options.youtubeBroadcastId;
+    this.youtubeApiKey = options.youtubeApiKey;
   }
 
   /**
@@ -61,7 +84,7 @@ export class ChatPoller {
       return;
     }
 
-    logger.info(`Starting chat polling (interval: ${this.pollIntervalMs}ms)`);
+    logger.info(`Starting chat polling (mode: ${this.useSimulation ? 'simulation' : 'YouTube API'}, interval: ${this.pollIntervalMs}ms)`);
     this.polling = true;
     this.poll();
   }
@@ -85,11 +108,8 @@ export class ChatPoller {
     if (!this.polling) return;
 
     try {
-      // Fetch new messages from YouLive API
-      // Note: This is a placeholder - actual implementation depends on YouLive API
       const messages = await this.fetchChatMessages();
       
-      // Process each message
       for (const message of messages) {
         await this.processMessage(message);
       }
@@ -97,32 +117,136 @@ export class ChatPoller {
       logger.error('Error polling chat:', error);
     }
 
-    // Schedule next poll
     this.pollTimer = setTimeout(() => this.poll(), this.pollIntervalMs);
   }
 
   /**
-   * Fetch chat messages from YouLive
-   * TODO: Implement actual YouLive API integration
+   * Fetch chat messages from YouTube Live or simulation
    */
   private async fetchChatMessages(): Promise<ChatMessage[]> {
-    // Placeholder implementation
-    // In production, this would call the YouLive API
-    // For now, return empty array
-    return [];
+    if (this.useSimulation) {
+      return this.fetchSimulatedMessages();
+    } else {
+      return this.fetchYouTubeLiveChat();
+    }
+  }
+
+  /**
+   * Simulation mode: Generate test chat messages for MVP testing
+   * Simulates random viewers sending commands
+   */
+  private fetchSimulatedMessages(): ChatMessage[] {
+    const messages: ChatMessage[] = [];
+    this.simulationCounter++;
+
+    // Simulate a command every ~20 poll cycles (100 seconds at 5s interval)
+    if (this.simulationCounter % 20 === 0) {
+      const commands = [
+        { cmd: '!bpm', args: ['90'], author: 'TestUser1' },
+        { cmd: '!mood', args: ['energetic'], author: 'MusicFan22' },
+        { cmd: '!intensity', args: ['0.8'], author: 'Listener99' },
+        { cmd: '!genre', args: ['synthwave'], author: 'RetroVibe' },
+        { cmd: '!help', args: [], author: 'NewViewer' },
+        { cmd: '!visualize', args: ['on'], author: 'VisualFan' },
+      ];
+      
+      const test = commands[Math.floor(Math.random() * commands.length)];
+      messages.push({
+        id: `sim_${Date.now()}_${Math.random()}`,
+        author: test.author,
+        text: `${test.cmd} ${test.args.join(' ')}`.trim(),
+        timestamp: Date.now()
+      });
+    }
+
+    // Occasionally simulate a non-command chat message
+    if (this.simulationCounter % 15 === 0) {
+      const chatMsgs = [
+        'Love this beat!',
+        'This is amazing',
+        'Can we get some jazz?',
+        'BPM 120 please!',
+        'Great stream!',
+        'What genre is this?',
+        'Mood: chill is perfect'
+      ];
+      const msg = chatMsgs[Math.floor(Math.random() * chatMsgs.length)];
+      messages.push({
+        id: `sim_chat_${Date.now()}`,
+        author: 'Viewer' + Math.floor(Math.random() * 1000),
+        text: msg,
+        timestamp: Date.now()
+      });
+    }
+
+    return messages;
+  }
+
+  /**
+   * Production: Fetch messages from YouTube Live Chat API
+   * Requires: youtubeBroadcastId and youtubeApiKey set in options
+   */
+  private async fetchYouTubeLiveChat(): Promise<ChatMessage[]> {
+    if (!this.youtubeBroadcastId || !this.youtubeApiKey) {
+      logger.warn('YouTube API credentials not configured. Enable simulation mode or set YOUTUBE_BROADCAST_ID and YOUTUBE_API_KEY.');
+      return [];
+    }
+
+    try {
+      // Get live chat ID for the broadcast
+      const broadcastUrl = `https://www.googleapis.com/youtube/v3/liveBroadcasts?part=liveStreamingDetails&id=${this.youtubeBroadcastId}&key=${this.youtubeApiKey}`;
+      
+      const broadcastRes = await fetch(broadcastUrl);
+      const broadcastData = await broadcastRes.json();
+      
+      if (!broadcastData.items || broadcastData.items.length === 0) {
+        logger.warn('Broadcast not found or not live');
+        return [];
+      }
+      
+      const liveChatId = broadcastData.items[0].liveStreamingDetails.activeLiveChatId;
+      if (!liveChatId) {
+        logger.warn('No active live chat ID found');
+        return [];
+      }
+      
+      // Fetch chat messages
+      const chatUrl = `https://www.googleapis.com/youtube/v3/liveChat/messages?liveChatId=${liveChatId}&part=snippet,authorDetails&key=${this.youtubeApiKey}`;
+      
+      const chatRes = await fetch(chatUrl);
+      const chatData = await chatRes.json();
+      
+      const messages: ChatMessage[] = (chatData.items || []).map(item => ({
+        id: item.id,
+        author: item.authorDetails?.displayName || 'Unknown',
+        text: item.snippet?.displayMessage || '',
+        timestamp: Date.parse(item.snippet?.publishedAt) || Date.now()
+      }));
+      
+      return messages;
+      
+    } catch (error) {
+      logger.error('YouTube API error:', error);
+      return [];
+    }
   }
 
   /**
    * Process a chat message and check for commands
    */
   private async processMessage(message: ChatMessage): Promise<void> {
-    // Skip if we've already seen this message
+    // Skip if already seen
     if (this.lastMessageId === message.id) {
       return;
     }
     this.lastMessageId = message.id;
 
     const text = message.text.trim();
+    
+    // Add ALL chat messages to overlay (not just commands)
+    if (this.youtubeStreamer) {
+      this.youtubeStreamer.addChatMessage(message.author, text);
+    }
     
     // Check if message starts with a command
     if (!text.startsWith('!')) {
@@ -135,11 +259,12 @@ export class ChatPoller {
 
     // Check if command is allowed
     if (!this.allowedCommands.includes(command)) {
+      logger.debug(`Unknown command: ${command}`);
       return;
     }
 
-    // Check cooldown
-    if (!this.checkCooldown(command, message.timestamp)) {
+    // Check cooldown (except for !help which is always allowed)
+    if (command !== '!help' && !this.checkCooldown(command, message.timestamp)) {
       logger.debug(`Command ${command} from ${message.author} on cooldown`);
       return;
     }
@@ -165,8 +290,10 @@ export class ChatPoller {
    * Handle a chat command
    */
   private async handleCommand(command: string, args: string[], author: string): Promise<void> {
-    // Update cooldown
-    this.lastCommandTime.set(command, Date.now());
+    // Update cooldown (except !help)
+    if (command !== '!help') {
+      this.lastCommandTime.set(command, Date.now());
+    }
 
     try {
       switch (command) {
@@ -181,6 +308,9 @@ export class ChatPoller {
           break;
         case '!intensity':
           await this.handleIntensityCommand(args, author);
+          break;
+        case '!visualize':
+          await this.handleVisualizeCommand(args, author);
           break;
         case '!help':
           await this.handleHelpCommand(author);
@@ -206,12 +336,19 @@ export class ChatPoller {
       return;
     }
 
+    // Update Lyria parameters
     await this.lyriaClient.updateParameters({ bpm });
+    
+    // Update visualizer on streamer
+    if (this.youtubeStreamer) {
+      this.youtubeStreamer.updateVisualizerParams({ bpm });
+    }
+    
     logger.info(`BPM changed to ${bpm} by ${author}`);
   }
 
   /**
-   * Handle !mood command
+   * Handle !mood command - affects both Lyria and visualizer
    */
   private async handleMoodCommand(args: string[], author: string): Promise<void> {
     const mood = args[0]?.toLowerCase();
@@ -223,6 +360,11 @@ export class ChatPoller {
     }
 
     await this.lyriaClient.updateParameters({ mood });
+    
+    if (this.youtubeStreamer) {
+      this.youtubeStreamer.updateVisualizerParams({ mood });
+    }
+    
     logger.info(`Mood changed to ${mood} by ${author}`);
   }
 
@@ -253,7 +395,25 @@ export class ChatPoller {
     }
 
     await this.lyriaClient.updateParameters({ intensity });
+    
+    if (this.youtubeStreamer) {
+      this.youtubeStreamer.updateVisualizerParams({ intensity });
+    }
+    
     logger.info(`Intensity changed to ${intensity} by ${author}`);
+  }
+
+  /**
+   * Handle !visualize command - toggle chat overlay on video
+   */
+  private async handleVisualizeCommand(args: string[], author: string): Promise<void> {
+    const showChat = args[0] === 'on' || args[0] === 'true';
+    
+    if (this.youtubeStreamer) {
+      this.youtubeStreamer.updateVisualizerParams({ showChat });
+    }
+    
+    logger.info(`Visualizer chat overlay ${showChat ? 'enabled' : 'disabled'} by ${author}`);
   }
 
   /**
@@ -262,15 +422,17 @@ export class ChatPoller {
   private async handleHelpCommand(author: string): Promise<void> {
     const helpText = [
       'Available commands:',
-      '  !bpm <40-200> - Change tempo',
-      '  !mood <chill|energetic|focus|nostalgic> - Change mood',
-      '  !genre <lo-fi|jazz|ambient|synthwave> - Change genre',
-      '  !intensity <0-1> - Adjust intensity',
+      '  !bpm <40-200> - Change tempo (affects music)',
+      '  !mood <chill|energetic|focus|nostalgic|happy|melancholic|dark|uplifting> - Change mood (affects music + visuals)',
+      '  !genre <lo-fi|jazz|ambient|synthwave|electronic|classical|hip-hop|rock> - Change music genre',
+      '  !intensity <0-1> - Adjust intensity (affects music + visualizer)',
+      '  !visualize on/off - Toggle chat overlay on video',
       '  !help - Show this help'
-    ].join('\\n');
+    ].join('\n');
 
-    logger.info(`Help requested by ${author}`);
-    // In production, send this back to chat
+    logger.info(`Help sent to ${author}: ${helpText}`);
+    // In production, send this as a chat message back to the user
+    // For now, we just log it
   }
 
   /**
