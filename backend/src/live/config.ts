@@ -1,7 +1,11 @@
 import dotenv from 'dotenv';
-import { resolve } from 'path';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export const config = {
   gemini: {
@@ -25,7 +29,7 @@ export const config = {
     level: process.env.LOG_LEVEL || 'info'
   },
   presets: {
-    dir: resolve(process.env.PRESETS_DIR || './src/live/presets')
+    dir: process.env.PRESETS_DIR || join(__dirname, 'presets')
   }
 };
 

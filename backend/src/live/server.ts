@@ -30,7 +30,7 @@ app.use(cors());
 app.use(express.json());
 
 // Serve frontend static files from live dashboard
-const liveFrontendPath = join(__dirname, '../../frontend/live');
+const liveFrontendPath = join(__dirname, '../../../frontend/live');
 app.use(express.static(liveFrontendPath));
 
 // Create HTTP server
@@ -591,7 +591,7 @@ server.listen(config.server.port, config.server.host, () => {
 
 // SPA fallback: serve index.html for any non-API route
 app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, '../../frontend/live/index.html'));
+  res.sendFile(join(__dirname, '../../../frontend/live/index.html'));
 });
 
 export { app, server, wss };
