@@ -27,10 +27,11 @@ def load_model():
     if pipe is None:
         print("Loading Riffusion pipeline...")
         # Use a smaller model suitable for CPU
-        model_id = "riffusion/riffusion-model-1"
+        model_id = "riffusion/riffusion-model-v1"
         pipe = DiffusionPipeline.from_pretrained(
             model_id,
             torch_dtype=torch.float32,  # CPU-friendly
+            # No token needed for public model
         )
         pipe = pipe.to(device)
         print(f"Model loaded on {device}")

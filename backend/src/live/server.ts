@@ -12,10 +12,11 @@ import { WebSocketServer, WebSocket } from 'ws';
 import cors from 'cors';
 import { config } from './config.js';
 import { UnifiedMusicClient } from './music_client.js';
-import { YouTubeRTMPStreamer } from './youtube_rtmp.js';
+// import { YouTubeRTMPStreamer } from './youtube_rtmp.js';  // COMMENTED OUT
 import { PresetsAPI } from './presets_api.js';
 import { ChatPoller } from './chat_poller.js';
 import { getLogger, setupLogging } from './utils.js';
+import { StreamRunner } from './stream_runner.js';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -44,7 +45,8 @@ const wss = new WebSocketServer({
 
 // State
 let musicClient: UnifiedMusicClient | null = null;
-let youtubeStreamer: YouTubeRTMPStreamer | null = null;
+// let youtubeStreamer: YouTubeRTMPStreamer | null = null;  // COMMENTED OUT
+let streamRunner: StreamRunner | null = null;
 let chatPoller: ChatPoller | null = null;
 let currentPreset: any = null;
 let activeConnections = new Set<WebSocket>();
@@ -153,8 +155,8 @@ app.post('/api/stream/start', async (req, res) => {
       await youtubeStreamer.stop();
     }
     
-    if (lyriaClient) {
-      await lyriaClient.close();
+    if (musicClient) {
+      await musicClient.close();
     }
 
     // Initialize unified music client (Lyria or Stable Audio based on config)
@@ -485,8 +487,8 @@ async function handleControlMessage(ws: WebSocket, message: any) {
           youtubeStreamer.addChatMessage(author, fullCmd);
         }
         
-        // Process the command if Lyria is active
-        if (lyriaClient) {
+        // Process the command if music generation is active
+        if (musicClient) {
           const params: any = {};
           switch (command) {
             case '!bpm':
@@ -507,7 +509,7 @@ async function handleControlMessage(ws: WebSocket, message: any) {
           }
           
           if (Object.keys(params).length > 0) {
-            await lyriaClient.updateParameters(params);
+            await musicClient.updateParameters(params);
             
             // Also update visualizer if needed
             if (youtubeStreamer) {
@@ -529,9 +531,9 @@ async function handleControlMessage(ws: WebSocket, message: any) {
       ws.send(JSON.stringify({
         type: 'status',
         streaming: youtubeStreamer?.isStreaming() ?? false,
-        generating: lyriaClient?.isGenerating() ?? false,
+        generating: musicClient?.isGenerating() ?? false,
         preset: currentPreset?.id ?? null,
-        params: lyriaClient?.getCurrentParams() ?? null
+        params: musicClient?.getCurrentParams() ?? null
       }));
       break;
 
@@ -552,9 +554,9 @@ async function shutdown() {
     chatPoller.stop();
   }
   
-  // Close Lyria generation
-  if (lyriaClient) {
-    await lyriaClient.close();
+  // Close music generation
+  if (musicClient) {
+    await musicClient.close();
   }
   
   // Stop YouTube stream

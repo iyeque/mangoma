@@ -27,6 +27,8 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+type Mood = VisualizerConfig['mood'];
+
 /**
  * Mood-based color palettes for visualizer
  */
@@ -134,7 +136,7 @@ function generateWaveformFilter(config: VisualizerConfig): string[] {
   const blendMode = config.mood === 'chill' || config.mood === 'focus' ? 'overlay' : 'screen';
   const opacity = 0.6 + (config.intensity * 0.4); // 0.6-1.0
   
-  filters.push(`[${config.hasAudioInput ? '1' : 'base'}]${waveFilter}[wave]`);
+  filters.push(`[1]${waveFilter}[wave]`);
   filters.push(`[base][wave]blend=all_mode=${blendMode}:all_opacity=${opacity.toFixed(2)}[visual]`);
   
   return filters;
@@ -230,6 +232,8 @@ export function buildFFmpegCommand(
   
   // Build filter complex
   const filters: string[] = [];
+  let lastFilter: string; // track the last filter label for mapping
+  let lastFilter: string; // track last filter label for chaining
   
   // Generate base color background
   filters.push(`color=c=${MOOD_COLORS[visualizerConfig.mood].background}:s=${visualizerConfig.width}x${visualizerConfig.height}:r=${visualizerConfig.fps}[base]`);
@@ -322,7 +326,7 @@ export function parseVisualizerCommand(
       return { showChat: enabled };
       
     case '!mood':
-      const mood = args[0] as any;
+      const mood = args[0] as Mood;
       if (MOOD_COLORS[mood]) {
         return { mood };
       }

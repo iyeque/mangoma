@@ -11,7 +11,7 @@ import { getLogger } from './utils.js';
 const logger = getLogger('stable_audio_client');
 
 export interface StableAudioParams {
-  prompt: string;
+  prompt?: string;  // optional when not actively generating
   duration?: number;  // seconds (max 47 for stable-audio-open-1.0)
   tempo?: number;
   num_inference_steps?: number;
@@ -34,7 +34,7 @@ export class StableAudioClient {
   private apiUrl: string;
   private generating = false;
   private currentPrompt: string | null = null;
-  private currentParams: StableAudioParams = {};
+  private currentParams: Partial<StableAudioParams> = {};
   private onAudioChunk?: (audio: Buffer) => void;
   private onError?: (error: Error) => void;
   private onProgress?: (progress: number) => void;

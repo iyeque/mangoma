@@ -106,6 +106,18 @@ export class RiffusionClient {
     }
   }
 
+  /**
+   * Check if server is healthy (shortcut)
+   */
+  async isHealthy(): Promise<boolean> {
+    try {
+      const response = await axios.get(`${this.apiUrl}/health`, { timeout: 2000 });
+      return response.status === 200 && response.data?.status === 'ok';
+    } catch {
+      return false;
+    }
+  }
+
   isGenerating(): boolean {
     return this.generating;
   }

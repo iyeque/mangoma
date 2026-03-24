@@ -3,6 +3,14 @@
 
 cd "$(dirname "$0")"
 
+# Load environment variables from .env if present
+if [ -f .env ]; then
+  export $(grep -v '^#' .env | xargs)
+fi
+
+# Also set HF_HUB_TOKEN for Hugging Face libraries
+export HF_HUB_TOKEN="${HUGGINGFACE_API_TOKEN}"
+
 echo "Starting Riffusion server..."
 echo "Log: $(pwd)/riffusion_server.log"
 echo "PID: $(pwd)/riffusion_server.pid"

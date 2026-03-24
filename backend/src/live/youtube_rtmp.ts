@@ -7,6 +7,8 @@ import {
   createVisualizerConfigFromPreset
 } from './visualizer.js';
 
+type Mood = VisualizerConfig['mood'];
+
 const logger = getLogger('youtube_rtmp');
 
 export interface YouTubeRTMPStreamerOptions {
@@ -152,9 +154,9 @@ export class YouTubeRTMPStreamer {
     const filters: string[] = [];
     
     // 1. Calculate BPM-driven pulse parameters
-    const pulseFrequency = (cfg.bpm / 60).toFixed(2); // Hz (beats per second)
-    const pulseDuration = (0.3 + (cfg.intensity * 0.2)).toFixed(2); // Duty cycle (30-50%)
-    const pulseOpacityMax = (0.15 + (cfg.intensity * 0.1)).toFixed(2); // Max opacity 0.15-0.25
+    const pulseFrequency = cfg.bpm / 60; // Hz (beats per second) - keep as number
+    const pulseDuration = 0.3 + (cfg.intensity * 0.2); // Duty cycle (30-50%) - keep as number
+    const pulseOpacityMax = 0.15 + (cfg.intensity * 0.1); // Max opacity 0.15-0.25 - keep as number
     
     // 2. Create base background with mood color
     const bgColor = this.getMoodColor('background');
@@ -448,8 +450,8 @@ export class YouTubeRTMPStreamer {
     logger.info('Visualizer parameters updated:', this.visualizerConfig);
   }
 
-  private isValidMood(mood: string): mood is keyof typeof this.visualizerConfig.mood {
-    return ['chill', 'energetic', 'focus', 'nostalgic', 'happy', 'melancholic', 'dark', 'uplifting'].includes(mood);
+  private isValidMood(mood: string): mood is Mood {
+    return ['chill', 'energetic', 'focus', 'nostalgic', 'happy', 'melancholic', 'dark', 'uplifting'].includes(mood as Mood);
   }
 
   isStreaming(): boolean {
