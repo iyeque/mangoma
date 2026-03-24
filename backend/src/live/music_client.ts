@@ -8,10 +8,11 @@ import { config } from './config.js';
 import { getLogger } from './utils.js';
 import { LyriaClient, type LyriaParams } from './lyria_client.js';
 import { StableAudioClient, type StableAudioParams } from './stable_audio_client.js';
+import { RiffusionClient, type RiffusionParams } from './riffusion_client.js';
 
 const logger = getLogger('music_client');
 
-export type MusicProvider = 'lyria' | 'stable-audio' | 'local';
+export type MusicProvider = 'lyria' | 'stable-audio' | 'riffusion' | 'local';
 
 export interface UnifiedMusicClientOptions {
   provider?: MusicProvider;
@@ -42,6 +43,7 @@ export class UnifiedMusicClient {
   private provider: MusicProvider;
   private lyriaClient: LyriaClient | null = null;
   private stableAudioClient: StableAudioClient | null = null;
+  private riffusionClient: RiffusionClient | null = null;
   private currentProviderInstance: any = null;
   private connected = false;
   private generating = false;
@@ -49,8 +51,8 @@ export class UnifiedMusicClient {
   private currentParams: MusicParams = {};
 
   constructor(options: UnifiedMusicClientOptions) {
-    // Determine provider: explicit > env > default (auto-detect)
-    this.provider = options.provider || (config.vertex?.projectId ? 'lyria' : 'stable-audio') as MusicProvider;
+    // Determine provider: explicit > env > default (riffusion - zero cost)
+    this.provider = options.provider || config.musicProvider || 'riffusion' as MusicProvider;
 
     logger.info(`Initializing UnifiedMusicClient with provider: ${this.provider}`);
 
@@ -66,14 +68,28 @@ export class UnifiedMusicClient {
 
     if (this.provider === 'stable-audio' || !options.provider) {
       this.stableAudioClient = new StableAudioClient({
-        apiToken: options.apiToken || process.env.HUGGINGFACE_API_TOKEN || '',
-        model: process.env.STABLE_AUDIO_MODEL || 'stabilityai/stable-audio-open-1.0',
+        apiToken: options.apiToken || config.stableAudio.apiToken,
+        model: options.model || config.stableAudio.model,
         onAudioChunk: options.onAudioChunk,
         onError: options.onError
       });
     }
 
-    this.currentProviderInstance = this.provider === 'lyria' ? this.lyriaClient : this.stableAudioClient;
+    if (this.provider === 'riffusion' || !options.provider) {
+      this.riffusionClient = new RiffusionClient({
+        apiUrl: config.riffusion.apiUrl,
+        onAudioChunk: options.onAudioChunk,
+        onError: options.onError
+      });
+    }
+
+    // Set the active provider instance
+    switch (this.provider) {
+      case 'lyria': this.currentProviderInstance = this.lyriaClient; break;
+      case 'stable-audio': this.currentProviderInstance = this.stableAudioClient; break;
+      case 'riffusion': this.currentProviderInstance = this.riffusionClient; break;
+      default: this.currentProviderInstance = this.riffusionClient;
+    }
   }
 
   async connect(): Promise<void> {
@@ -121,6 +137,16 @@ export class UnifiedMusicClient {
         };
         const audio = await this.stableAudioClient!.generate(stableParams);
         this.onAudioChunk?.(audio);
+      } else if (this.provider === 'riffusion') {
+        // Riffusion generates short clips (5-30 sec)
+        const riffusionParams: RiffusionParams = {
+          prompt: params.prompt,
+          duration: params.duration || 10,
+          seed: undefined,
+          negative_prompt: 'low quality, noisy, distortion'
+        };
+        const audio = await this.riffusionClient!.generate(riffusionParams);
+        this.onAudioChunk?.(audio);
       }
 
       this.onStateChange?.('generating');
@@ -156,8 +182,15 @@ export class UnifiedMusicClient {
         if (params.intensity !== undefined) lyriaParams.intensity = params.intensity;
         if (params.temperature !== undefined) lyriaParams.temperature = params.temperature;
         await this.lyriaClient!.updateParameters(lyriaParams);
+      } else if (this.provider === 'riffusion' && this.currentPrompt) {
+        // Riffusion doesn't support live updates – restart generation with new params
+        logger.info('Riffusion: restarting generation with updated parameters');
+        await this.startGeneration({
+          prompt: this.currentPrompt,
+          ...this.currentParams
+        });
       }
-      // Stable Audio doesn't support live parameter updates
+      // Stable Audio does not support live parameter updates
     } catch (error) {
       logger.error('Failed to update parameters:', error);
       throw error;

@@ -21,7 +21,10 @@ export const config = {
     apiToken: process.env.HUGGINGFACE_API_TOKEN || '',
     model: process.env.STABLE_AUDIO_MODEL || 'stabilityai/stable-audio-open-1.0'
   },
-  musicProvider: (process.env.MUSIC_PROVIDER || 'lyria') as 'lyria' | 'stable-audio' | 'local',
+  riffusion: {
+    apiUrl: process.env.RIFFUSION_API_URL || 'http://localhost:3000'
+  },
+  musicProvider: (process.env.MUSIC_PROVIDER || 'riffusion') as 'lyria' | 'stable-audio' | 'riffusion',
   server: {
     port: parseInt(process.env.PORT || '8080', 10),
     host: process.env.HOST || 'localhost'
