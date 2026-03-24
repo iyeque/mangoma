@@ -233,7 +233,7 @@ export class YouTubeRTMPStreamer {
     
     // Build chat lines with command highlighting
     const chatLines = recentMessages.map(m => {
-      const text = m.text.replace(/^(!\w+)/, `<b>\1</b>`); // Highlight commands
+      const text = m.text.replace(/^(!\w+)/, `<b>\\1</b>`); // Highlight commands
       return `${m.author}: ${text}`;
     }).join('\\n');
     
