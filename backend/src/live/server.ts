@@ -11,7 +11,7 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import cors from 'cors';
 import { config } from './config.js';
-import { LyriaClient } from './lyria_client.js';
+import { UnifiedMusicClient } from './music_client.js';
 import { YouTubeRTMPStreamer } from './youtube_rtmp.js';
 import { PresetsAPI } from './presets_api.js';
 import { ChatPoller } from './chat_poller.js';
@@ -43,7 +43,7 @@ const wss = new WebSocketServer({
 });
 
 // State
-let lyriaClient: LyriaClient | null = null;
+let musicClient: UnifiedMusicClient | null = null;
 let youtubeStreamer: YouTubeRTMPStreamer | null = null;
 let chatPoller: ChatPoller | null = null;
 let currentPreset: any = null;
@@ -60,7 +60,8 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     connections: activeConnections.size,
     streaming: youtubeStreamer?.isStreaming() ?? false,
-    generating: lyriaClient?.isGenerating() ?? false
+    generating: musicClient?.isGenerating() ?? false,
+    provider: musicClient?.getProvider() ?? null
   });
 });
 
@@ -156,10 +157,14 @@ app.post('/api/stream/start', async (req, res) => {
       await lyriaClient.close();
     }
 
-    // Initialize Lyria client with audio callback
-    lyriaClient = new LyriaClient({
+    // Initialize unified music client (Lyria or Stable Audio based on config)
+    musicClient = new UnifiedMusicClient({
+      provider: config.musicProvider,
       apiKey: config.gemini.apiKey,
-      model: preset?.lyria?.model || config.lyria?.model || config.gemini.model,
+      apiToken: config.stableAudio.apiToken,
+      projectId: config.vertex.projectId,
+      location: config.vertex.location,
+      model: preset?.lyria?.model || config.gemini.model,
       onAudioChunk: async (audio: Buffer) => {
         // Forward generated audio to YouTube streamer
         if (youtubeStreamer?.isStreaming()) {
@@ -167,7 +172,10 @@ app.post('/api/stream/start', async (req, res) => {
         }
       },
       onError: (error) => {
-        logger.error('Lyria generation error:', error);
+        logger.error('Music generation error:', error);
+      },
+      onStateChange: (state) => {
+        logger.info(`Music client state changed: ${state}`);
       }
     });
     
@@ -190,15 +198,15 @@ app.post('/api/stream/start', async (req, res) => {
     await youtubeStreamer.start();
     logger.info('YouTube RTMP stream started');
 
-    // Connect to Lyria and start continuous generation
-    await lyriaClient.connect();
-    await lyriaClient.startGeneration(prompt, preset?.lyria?.params);
-    logger.info('Lyria continuous generation started');
+    // Connect to music provider and start continuous generation
+    await musicClient.connect();
+    await musicClient.startGeneration({ prompt });
+    logger.info(`Music generation started with provider: ${musicClient.getProvider()}`);
 
     // Initialize chat poller if enabled
     if (preset?.interaction?.realtimeAdjustments?.enabled) {
       chatPoller = new ChatPoller(
-        lyriaClient,
+        musicClient,
         youtubeStreamer,
         {
           enabled: preset.youtube?.chatEnabled ?? true,
@@ -224,6 +232,7 @@ app.post('/api/stream/start', async (req, res) => {
       status: 'streaming', 
       preset: presetId,
       prompt,
+      provider: musicClient.getProvider(),
       message: 'Continuous music generation started'
     });
 
@@ -235,9 +244,9 @@ app.post('/api/stream/start', async (req, res) => {
       await youtubeStreamer.stop();
       youtubeStreamer = null;
     }
-    if (lyriaClient) {
-      await lyriaClient.close();
-      lyriaClient = null;
+    if (musicClient) {
+      await musicClient.close();
+      musicClient = null;
     }
     
     res.status(500).json({ error: 'Failed to start stream', details: error.message });
@@ -255,10 +264,10 @@ app.post('/api/stream/stop', async (req, res) => {
       chatPoller = null;
     }
 
-    // Stop Lyria generation
-    if (lyriaClient) {
-      await lyriaClient.close();
-      lyriaClient = null;
+    // Stop music generation
+    if (musicClient) {
+      await musicClient.close();
+      musicClient = null;
     }
     
     // Stop YouTube stream
@@ -283,14 +292,14 @@ app.post('/api/stream/stop', async (req, res) => {
  */
 app.post('/api/stream/update', async (req, res) => {
   try {
-    if (!lyriaClient) {
+    if (!musicClient) {
       return res.status(400).json({ error: 'No active stream' });
     }
 
     const { bpm, mood, genre, intensity, temperature } = req.body;
     
-    // Update Lyria parameters
-    await lyriaClient.updateParameters({ bpm, mood, genre, intensity, temperature });
+    // Update music client parameters
+    await musicClient.updateParameters({ bpm, mood, genre, intensity, temperature });
 
     logger.info('Stream parameters updated:', { bpm, mood, genre, intensity });
     res.json({ 
@@ -310,13 +319,14 @@ app.post('/api/stream/update', async (req, res) => {
 app.get('/api/stream/status', (req, res) => {
   res.json({
     streaming: youtubeStreamer?.isStreaming() ?? false,
-    generating: lyriaClient?.isGenerating() ?? false,
+    generating: musicClient?.isGenerating() ?? false,
     preset: currentPreset?.id ?? null,
-    prompt: lyriaClient?.getCurrentPrompt() ?? null,
-    params: lyriaClient?.getCurrentParams() ?? null,
+    prompt: musicClient?.getCurrentPrompt() ?? null,
+    params: musicClient?.getCurrentParams() ?? null,
     connections: activeConnections.size,
-    lyria: {
-      connected: lyriaClient?.isConnected() ?? false,
+    music: {
+      connected: musicClient?.isConnected() ?? false,
+      provider: musicClient?.getProvider() ?? null,
       model: config.gemini.model
     }
   });
@@ -383,8 +393,8 @@ wss.on('connection', (ws: WebSocket, req: any) => {
     clientId,
     timestamp: Date.now(),
     preset: currentPreset?.id ?? null,
-    generating: lyriaClient?.isGenerating() ?? false,
-    params: lyriaClient?.getCurrentParams() ?? null,
+    generating: musicClient?.isGenerating() ?? false,
+    params: musicClient?.getCurrentParams() ?? null,
     chatHistory: chatHistory.slice(-10), // last 10 messages
     message: 'Connected to Mangoma Live control. Send commands to adjust music generation.'
   }));
@@ -442,9 +452,9 @@ async function handleControlMessage(ws: WebSocket, message: any) {
             preset: preset.id 
           }));
           
-          // Update Lyria if streaming
-          if (lyriaClient) {
-            await lyriaClient.updateParameters(preset.lyria?.params);
+          // Update music provider if streaming
+          if (musicClient) {
+            await musicClient.updateParameters(preset.lyria?.params as any);
           }
         }
       }
@@ -452,12 +462,12 @@ async function handleControlMessage(ws: WebSocket, message: any) {
 
     case 'update':
       // Real-time parameter update
-      if (lyriaClient) {
-        await lyriaClient.updateParameters(data);
+      if (musicClient) {
+        await musicClient.updateParameters(data);
         ws.send(JSON.stringify({ 
           type: 'parameters_updated', 
           params: data,
-          currentParams: lyriaClient.getCurrentParams()
+          currentParams: musicClient.getCurrentParams()
         }));
       }
       break;

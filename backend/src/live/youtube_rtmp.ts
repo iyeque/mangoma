@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
+import fs from 'fs';
 import { config } from './config.js';
 import { getLogger } from './utils.js';
 import {
@@ -274,7 +275,6 @@ export class YouTubeRTMPStreamer {
    * Write chat overlay file for potential use with textfile
    */
   private writeChatOverlayFile(): void {
-    const fs = require('fs');
     const content = this.chatMessages.slice(-3).map(m => `${m.author}: ${m.text}`).join('\n');
     try {
       fs.writeFileSync(this.chatOverlayFile, content, 'utf-8');
@@ -383,7 +383,6 @@ export class YouTubeRTMPStreamer {
    * Clean up chat overlay file
    */
   private cleanupChatFile(): void {
-    const fs = require('fs');
     try {
       if (fs.existsSync(this.chatOverlayFile)) {
         fs.unlinkSync(this.chatOverlayFile);

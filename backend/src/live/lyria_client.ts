@@ -1,12 +1,10 @@
 /**
  * Lyria Client for Continuous Music Generation
- * 
- * Refactored from audio-processing mode to autonomous generation mode.
- * Sends text prompts to initiate continuous music generation without microphone input.
- * Supports real-time parameter updates via chat commands.
+ *
+ * Updated to use @google/genai v1.x Live Music API.
  */
 
-import { GoogleGenAI, type LiveMusicSession, type LiveMusicMessage } from '@google/genai';
+import { GoogleGenAI, type LiveMusicSession } from '@google/genai';
 import { config } from './config.js';
 import { getLogger } from './utils.js';
 
@@ -18,7 +16,7 @@ export interface LyriaParams {
   genre?: string;
   intensity?: number;
   temperature?: number;
-  duration?: string; // e.g., "continuous", "30s", "5m"
+  duration?: string; // e.g., "continuous"
 }
 
 export interface LyriaClientOptions {
@@ -46,9 +44,6 @@ export class LyriaClient {
     this.onError = options.onError;
   }
 
-  /**
-   * Connect to Lyria and establish a live music session
-   */
   async connect(): Promise<void> {
     if (this.connected) {
       return;
@@ -57,28 +52,21 @@ export class LyriaClient {
     logger.info(`Connecting to Lyria model: ${this.model}`);
 
     try {
-      this.session = await this.ai.live.connect({
+      this.session = await this.ai.live.music.connect({
         model: this.model,
-        generationConfig: {
-          temperature: this.currentParams.temperature || 0.7,
-          responseModalities: ['audio']
+        callbacks: {
+          onmessage: (e: MessageEvent) => this.handleLyriaMessage(e),
+          onerror: (e: ErrorEvent) => {
+            logger.error('Lyria session error:', e.error);
+            this.connected = false;
+            this.onError?.(e.error);
+          },
+          onclose: () => {
+            logger.info('Lyria session closed');
+            this.connected = false;
+            this.generating = false;
+          }
         }
-      });
-
-      this.session.on('message', (message: LiveMusicMessage) => {
-        this.handleLyriaMessage(message);
-      });
-
-      this.session.on('error', (error: any) => {
-        logger.error('Lyria session error:', error);
-        this.connected = false;
-        this.onError?.(error);
-      });
-
-      this.session.on('close', () => {
-        logger.info('Lyria session closed');
-        this.connected = false;
-        this.generating = false;
       });
 
       this.connected = true;
@@ -89,12 +77,6 @@ export class LyriaClient {
     }
   }
 
-  /**
-   * Start continuous music generation with a text prompt
-   * 
-   * @param prompt - Text description of the music to generate
-   * @param params - Generation parameters (BPM, mood, genre, etc.)
-   */
   async startGeneration(prompt: string, params: LyriaParams = {}): Promise<void> {
     if (!this.connected) {
       await this.connect();
@@ -111,13 +93,24 @@ export class LyriaClient {
     this.generating = true;
 
     try {
-      // Build the generation prompt with parameters
       const generationPrompt = this.buildGenerationPrompt(prompt, params);
       
-      // Send the prompt as text to initiate autonomous generation
-      await this.session.send({
-        text: generationPrompt
+      // Set weighted prompts
+      await this.session.setWeightedPrompts({
+        weightedPrompts: [{ text: generationPrompt, weight: 1 }]
       });
+
+      // Apply config parameters if provided
+      const configUpdate: any = {};
+      if (params.temperature !== undefined) configUpdate.temperature = params.temperature;
+      if (params.bpm !== undefined) configUpdate.bpm = params.bpm;
+      // Additional mapping: intensity -> density/brightness could be added
+      if (Object.keys(configUpdate).length > 0) {
+        await this.session.setMusicGenerationConfig({ musicGenerationConfig: configUpdate });
+      }
+
+      // Start playback
+      await this.session.play();
 
       logger.info('Generation started successfully');
     } catch (error) {
@@ -127,36 +120,6 @@ export class LyriaClient {
     }
   }
 
-  /**
-   * Build a comprehensive generation prompt with parameters
-   */
-  private buildGenerationPrompt(prompt: string, params: LyriaParams): string {
-    const parts: string[] = [];
-    
-    // Main prompt
-    parts.push(prompt);
-    
-    // Add parameter instructions
-    const paramParts: string[] = [];
-    if (params.bpm) paramParts.push(`${params.bpm} BPM`);
-    if (params.mood) paramParts.push(`${params.mood} mood`);
-    if (params.genre) paramParts.push(`${params.genre} genre`);
-    if (params.intensity !== undefined) paramParts.push(`intensity ${params.intensity}`);
-    if (params.duration) paramParts.push(`duration: ${params.duration}`);
-    
-    if (paramParts.length > 0) {
-      parts.push(`Generate continuous music with: ${paramParts.join(', ')}`);
-    }
-    
-    // Add instruction for continuous/autonomous generation
-    parts.push('Generate this music continuously without requiring audio input. Maintain the style and parameters until instructed otherwise.');
-
-    return parts.join('. ');
-  }
-
-  /**
-   * Stop the current generation
-   */
   async stopGeneration(): Promise<void> {
     if (!this.session || !this.generating) {
       return;
@@ -165,11 +128,7 @@ export class LyriaClient {
     logger.info('Stopping generation');
 
     try {
-      // Send stop command
-      await this.session.send({
-        text: '/stop generation'
-      });
-      
+      await this.session.stop();
       this.generating = false;
       this.currentPrompt = null;
     } catch (error) {
@@ -177,86 +136,128 @@ export class LyriaClient {
     }
   }
 
-  /**
-   * Update generation parameters in real-time
-   * Called by chat command handler or API
-   */
   async updateParameters(params: LyriaParams): Promise<void> {
     if (!this.session) {
       logger.warn('Cannot update parameters: not connected');
       return;
     }
 
-    // Merge with current params
     this.currentParams = { ...this.currentParams, ...params };
 
     try {
-      const commandText = this.buildParameterCommand(params);
-      
-      if (commandText) {
-        await this.session.send({
-          text: commandText
+      // Rebuild prompt to reflect any changes to mood, genre, intensity, etc.
+      if (this.currentPrompt) {
+        const newPrompt = this.buildGenerationPrompt(this.currentPrompt, this.currentParams);
+        await this.session.setWeightedPrompts({
+          weightedPrompts: [{ text: newPrompt, weight: 1 }]
         });
-        logger.info('Lyria parameters updated:', params);
       }
+
+      // Update numeric config directly
+      const configUpdate: any = {};
+      if (params.bpm !== undefined) configUpdate.bpm = params.bpm;
+      if (params.temperature !== undefined) configUpdate.temperature = params.temperature;
+      if (Object.keys(configUpdate).length > 0) {
+        await this.session.setMusicGenerationConfig({ musicGenerationConfig: configUpdate });
+      }
+
+      logger.info('Lyria parameters updated:', params);
     } catch (error) {
       logger.error('Failed to update Lyria parameters:', error);
       throw error;
     }
   }
 
-  /**
-   * Build parameter update command for Lyria
-   */
-  private buildParameterCommand(params: LyriaParams): string {
+  async sendChatCommand(command: string): Promise<void> {
+    // Parse simple commands: !bpm 80, !mood chill, !genre ambient, !intensity 0.8
+    if (command.startsWith('!bpm ')) {
+      const bpm = parseInt(command.slice(5).trim(), 10);
+      if (!isNaN(bpm)) {
+        await this.updateParameters({ bpm });
+        return;
+      }
+    } else if (command.startsWith('!mood ')) {
+      const mood = command.slice(6).trim();
+      if (mood) {
+        await this.updateParameters({ mood });
+        return;
+      }
+    } else if (command.startsWith('!genre ')) {
+      const genre = command.slice(7).trim();
+      if (genre) {
+        await this.updateParameters({ genre });
+        return;
+      }
+    } else if (command.startsWith('!intensity ')) {
+      const intensity = parseFloat(command.slice(11).trim());
+      if (!isNaN(intensity)) {
+        await this.updateParameters({ intensity });
+        return;
+      }
+    }
+    logger.info(`Chat command received (unhandled): ${command}`);
+  }
+
+  private buildGenerationPrompt(prompt: string, params: LyriaParams): string {
     const parts: string[] = [];
-    
-    if (params.bpm !== undefined) {
-      parts.push(`Adjust tempo to ${params.bpm} BPM`);
+    parts.push(prompt);
+
+    const paramParts: string[] = [];
+    if (params.bpm) paramParts.push(`${params.bpm} BPM`);
+    if (params.mood) paramParts.push(`${params.mood} mood`);
+    if (params.genre) paramParts.push(`${params.genre} genre`);
+    if (params.intensity !== undefined) paramParts.push(`intensity ${params.intensity}`);
+    if (params.duration) paramParts.push(`duration: ${params.duration}`);
+
+    if (paramParts.length > 0) {
+      parts.push(`Generate continuous music with: ${paramParts.join(', ')}`);
     }
-    if (params.mood) {
-      parts.push(`Change mood to ${params.mood}`);
-    }
-    if (params.genre) {
-      parts.push(`Switch to ${params.genre} genre`);
-    }
-    if (params.intensity !== undefined) {
-      parts.push(`Set intensity to ${params.intensity}`);
-    }
-    if (params.temperature !== undefined) {
-      parts.push(`Adjust creativity to ${params.temperature}`);
-    }
-    
-    if (parts.length === 0) return '';
-    
-    // Format as natural language instruction
+
+    parts.push('Generate this music continuously without requiring audio input. Maintain the style and parameters until instructed otherwise.');
+
     return parts.join('. ');
   }
 
-  /**
-   * Handle incoming messages from Lyria
-   */
-  private handleLyriaMessage(message: LiveMusicMessage): void {
-    logger.debug('Lyria message received:', {
-      hasAudio: !!message.audioData,
-      hasText: !!message.text
-    });
+  private handleLyriaMessage(event: MessageEvent): void {
+    const data = event.data;
+    let parsed: any;
 
-    // Extract audio data and forward to callback
-    if (message.audioData) {
-      const audioBuffer = Buffer.from(message.audioData);
-      this.onAudioChunk?.(audioBuffer);
+    if (typeof data === 'string') {
+      try {
+        parsed = JSON.parse(data);
+      } catch (err) {
+        // Non-JSON text, treat as plain text message
+        parsed = { text: data };
+      }
+    } else {
+      // Binary data? Unlikely as per spec (audio in JSON base64)
+      parsed = { text: `[binary data of length ${data ? data.byteLength : 0}]` };
     }
 
-    // Log any text responses (confirmations, etc.)
-    if (message.text) {
-      logger.info('Lyria response:', message.text);
+    // Handle audioChunks array (newer format)
+    if (parsed.audioChunks && Array.isArray(parsed.audioChunks)) {
+      for (const chunk of parsed.audioChunks) {
+        if (chunk.data) {
+          const audioBuffer = Buffer.from(chunk.data, 'base64');
+          this.onAudioChunk?.(audioBuffer);
+        }
+      }
+    } else if (parsed.audio) {
+      // Fallback: message has an 'audio' field (maybe base64 string or { data })
+      if (typeof parsed.audio === 'string') {
+        const audioBuffer = Buffer.from(parsed.audio, 'base64');
+        this.onAudioChunk?.(audioBuffer);
+      } else if (parsed.audio.data) {
+        const audioBuffer = Buffer.from(parsed.audio.data, 'base64');
+        this.onAudioChunk?.(audioBuffer);
+      }
+    }
+
+    if (parsed.text) {
+      logger.info('Lyria response:', parsed.text);
     }
   }
 
-  /**
-   * Close the Lyria session
-   */
   async close(): Promise<void> {
     if (this.generating) {
       await this.stopGeneration();
@@ -274,30 +275,18 @@ export class LyriaClient {
     this.generating = false;
   }
 
-  /**
-   * Check if connected to Lyria
-   */
   isConnected(): boolean {
     return this.connected;
   }
 
-  /**
-   * Check if currently generating music
-   */
   isGenerating(): boolean {
     return this.generating;
   }
 
-  /**
-   * Get current generation parameters
-   */
   getCurrentParams(): LyriaParams {
     return { ...this.currentParams };
   }
 
-  /**
-   * Get current prompt
-   */
   getCurrentPrompt(): string | null {
     return this.currentPrompt;
   }
